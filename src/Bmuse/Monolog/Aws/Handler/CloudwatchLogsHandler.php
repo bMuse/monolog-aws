@@ -1,6 +1,6 @@
 <?php
 /**
-Copyright (c) 2016 Daniel Guerrero
+Copyright (c) 2017 Daniel Guerrero
 
 Permission to use, copy, modify, and/or distribute this software for any
 purpose with or without fee is hereby granted, provided that the above
@@ -17,21 +17,17 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 namespace Bmuse\Monolog\Aws\Handler;
 
 use Monolog\Logger;
-use Monolog\Handler\AbstractProcessingHandler;
 use Aws\CloudWatchLogs\CloudWatchLogsClient;
 
 /**
  * Stores logs into CloudwatchLogs API
  */
-class CloudwatchLogsHandler extends AbstractProcessingHandler
+class CloudwatchLogsHandler extends AbstractBatchHandler
 {
     protected $stream_name;
     protected $group_name;
-    protected $batch_size;
 
     protected $last_sequence_token;
-    protected $events_queue;
-    protected $catch_exceptions = false;
 
     /**
      * @var CloudWatchLogsClient
@@ -41,7 +37,7 @@ class CloudwatchLogsHandler extends AbstractProcessingHandler
     public function __construct(
         CloudWatchLogsClient $client,
         $group_name,
-        $stream_name, $params=array()
+        $stream_name, $params=[]
     ) {
         $params = array_merge([
             'create_group_and_stream' => true,
@@ -55,13 +51,11 @@ class CloudwatchLogsHandler extends AbstractProcessingHandler
         $this->client = $client;
         $this->group_name = $group_name;
         $this->stream_name = $stream_name;
-        $this->batch_size = $params['batch_size'];
+        $this->setBatchSize($params['batch_size']);
         if ($params['create_group_and_stream'])
             $this->createGroupAndStream();
         else if (!$this->getStreamLastSequenceToken())
             throw new \Exception("Stream: {$stream_name} not found");
-
-        $this->events_queue = array();
     }
 
     protected function createGroupAndStream()
@@ -115,15 +109,11 @@ class CloudwatchLogsHandler extends AbstractProcessingHandler
                 }
             }
         } catch (\Exception $e) {
+            var_dump($e); exit();
             return false; //logGroupName not found for example
         }
 
         return false;
-    }
-
-    public function setCatchExceptions($flag)
-    {
-        $this->catch_exceptions = $flag;
     }
 
     /**
@@ -131,8 +121,7 @@ class CloudwatchLogsHandler extends AbstractProcessingHandler
      */
     public function close()
     {
-        $this->flush(true);
-
+        parent::close();
         $this->group_name = null;
         $this->stream_name = null;
     }
@@ -154,45 +143,23 @@ class CloudwatchLogsHandler extends AbstractProcessingHandler
         if (!$timestamp)
             $timestamp = time();
 
-        $this->events_queue[] = array(
+        parent::write([
             'timestamp' => $timestamp*1000, //we need in milliseconds
             'message' => (string) $record['formatted'],
-        );
-        $this->flush();
+        ]);
     }
 
-    protected function flush($force = false)
+    protected function writeToService(array $records)
     {
-        if (!$this->stream_name
-            || !$this->group_name)
-            return; //invalid state
+        $params = [
+            'logGroupName' => $this->group_name,
+            'logStreamName' => $this->stream_name,
+            'logEvents' => $records,
+        ];
+        if ($this->last_sequence_token)
+            $params['sequenceToken'] = $this->last_sequence_token;
 
-        if (!$force && count($this->events_queue) < $this->batch_size)
-            return; //we cannot write into server
-
-        //save into aws
-        try
-        {
-            $params = array(
-                'logGroupName' => $this->group_name,
-                'logStreamName' => $this->stream_name,
-                'logEvents' => $this->events_queue,
-
-            );
-            if ($this->last_sequence_token)
-                $params['sequenceToken'] = $this->last_sequence_token;
-            $result = $this->client->putLogEvents($params);
-
-            $this->events_queue = array();
-            $this->last_sequence_token = $result->get('nextSequenceToken');
-        }
-        catch(\Exception $e)
-        {
-            throw $e;
-            $this->events_queue = array();
-            $this->last_sequence_token = null;
-            if ($this->catch_exceptions)
-                throw $e;
-        }
+        $result = $this->client->putLogEvents($params);
+        $this->last_sequence_token = $result->get('nextSequenceToken');
     }
 }
