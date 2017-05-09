@@ -23,7 +23,7 @@ abstract class AbstractBatchHandler extends AbstractProcessingHandler
 {
     private $batch_size = 1;
     private $events_queue;
-    private $catch_exceptions = false;
+    private $catch_exceptions = true;
 
     /**
      * @var CloudWatchLogsClient
@@ -82,9 +82,8 @@ abstract class AbstractBatchHandler extends AbstractProcessingHandler
         }
         catch(\Exception $e)
         {
-            throw $e;
             $this->events_queue = [];
-            if ($this->catch_exceptions)
+            if (!$this->catch_exceptions)
                 throw $e;
         }
     }
